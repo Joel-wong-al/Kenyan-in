@@ -13,7 +13,9 @@ const defaultState = () => ({
   cartStoreId: null,
   cartNote: '',
   deliveryTime: 'ASAP',
+  scheduledTime: '12:00',
   paymentMethod: 'gopay',
+  _locReturn: '/buyer/home',
   dietary: ['halal', 'veg'],
   orders: [],         // buyer's orders {id, storeId, items, subtotal, fee, delivery, total, status, courier, placedAt, weight}
   sellerOnline: true,
@@ -164,6 +166,18 @@ function getItem(id) {
   return null;
 }
 function getStore(id) { return stores.find(s => s.id === id); }
+
+// Map coordinates for each campus block (center as canvas ratio)
+const blockCoords = {
+  A: [0.21, 0.22], B: [0.45, 0.16], C: [0.68, 0.22],
+  K: [0.24, 0.47], Lib: [0.53, 0.44], Cant: [0.78, 0.47],
+  D: [0.24, 0.75], E: [0.51, 0.74], F: [0.77, 0.75],
+};
+function userBlock() {
+  const m = (state.user.location || '').match(/Block (\w+)/i);
+  return (m && blockCoords[m[1]]) ? m[1] : 'K';
+}
+function userBlockCoord() { return blockCoords[userBlock()] || blockCoords.K; }
 function cartCount() { return state.cart.reduce((n, i) => n + i.qty, 0); }
 function cartSubtotal() { return state.cart.reduce((s, i) => s + (getItem(i.id)?.price || 0) * i.qty, 0); }
 function cartWeight() { return state.cart.reduce((w, i) => w + (getItem(i.id)?.weight || 0) * i.qty, 0); }
@@ -216,6 +230,29 @@ const I = {
   logout: (c = 'var(--danger)') => `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/></svg>`,
   help: (c = 'var(--orange)') => `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9 9a3 3 0 116 0c0 2-3 2-3 5M12 17v.01"/></svg>`,
 };
+
+// ─── Brand mark (bowl + cap + steam + tassel) ──────────────
+function brandMark(size = 48, opts = {}) {
+  const bowl = opts.bowl || 'var(--orange)';
+  const bowlRim = opts.bowlRim || 'var(--orange-deep)';
+  const cap = opts.cap || 'var(--charcoal)';
+  const tassel = opts.tassel || 'var(--amber)';
+  const steam = opts.steam !== false;
+  return `<svg width="${size}" height="${size}" viewBox="0 0 96 96" aria-label="Kenyan'in">
+    ${steam ? `
+    <path d="M40 12 Q36 20 40 26 Q44 32 40 40" stroke="${cap}" stroke-width="3" stroke-linecap="round" fill="none" opacity=".85"/>
+    <path d="M52 10 Q48 18 52 24 Q56 30 52 38" stroke="${cap}" stroke-width="3" stroke-linecap="round" fill="none" opacity=".85"/>` : ''}
+    <path d="M74 34 L74 50" stroke="${cap}" stroke-width="3" stroke-linecap="round"/>
+    <circle cx="74" cy="52" r="3" fill="${tassel}"/>
+    <path d="M22 34 L48 24 L74 34 L48 44 Z" fill="${cap}"/>
+    <path d="M14 46 Q14 74 48 84 Q82 74 82 46 Z" fill="${bowl}"/>
+    <path d="M14 46 L82 46" stroke="${bowlRim}" stroke-width="2"/>
+  </svg>`;
+}
+// Compact mark for small headers/nav (no steam)
+function brandMarkTight(size = 22) {
+  return brandMark(size, { steam: false });
+}
 
 // ─── Reusable UI helpers ────────────────────────────────────
 function foodImg(w, h, hue, r = 14) {
@@ -288,15 +325,28 @@ function currentRoute() {
   }
   return { fn: routes['/'], params: {} };
 }
+let _splashShown = false;
 function render() {
   save();
   const app = $('#app');
   const { fn, params } = currentRoute();
   app.innerHTML = fn(params);
+  // First-load splash — one time per page open
+  if (!_splashShown) {
+    _splashShown = true;
+    const s = document.createElement('div');
+    s.className = 'splash';
+    s.innerHTML = `
+      <div class="mark">${brandMark(78)}</div>
+      <div class="word">Kenyan<span class="ap">'</span>in</div>
+      <div class="tag">Between classes, we deliver.</div>`;
+    app.appendChild(s);
+    setTimeout(() => s.remove(), 1600);
+  }
   bindTaps();
   window.scrollTo(0, 0);
-  const s = app.querySelector('.scroll');
-  if (s) s.scrollTop = 0;
+  const sc = app.querySelector('.scroll');
+  if (sc) sc.scrollTop = 0;
 }
 function bindTaps() {
   $$('[data-go]').forEach(el => el.addEventListener('click', e => {
@@ -305,9 +355,19 @@ function bindTaps() {
   }));
   $$('[data-action]').forEach(el => el.addEventListener('click', e => {
     e.stopPropagation();
-    const [name, ...args] = el.dataset.action.split(':');
+    // Split on '|' so args can contain colons (e.g. time strings like "12:00")
+    // Fallback: split first ':' only for backward compat.
+    const raw = el.dataset.action;
+    let parts;
+    if (raw.includes('|')) parts = raw.split('|');
+    else {
+      const i = raw.indexOf(':');
+      parts = i === -1 ? [raw] : [raw.slice(0, i), ...raw.slice(i + 1).split(':')];
+    }
+    const [name, ...args] = parts;
     if (actions[name]) actions[name](...args, el);
   }));
+  if (typeof wireMapBlocks === 'function') wireMapBlocks();
 }
 
 // ─── Actions ────────────────────────────────────────────────
@@ -360,7 +420,7 @@ const actions = {
     state.orders.unshift(order);
     state.cart = []; state.cartStoreId = null; state.cartNote = '';
     save();
-    go('/buyer/track/' + order.id);
+    go('/buyer/success/' + order.id);
   },
   toggleSellerOnline() { state.sellerOnline = !state.sellerOnline; save(); render(); },
   toggleDeliveryOnline() { state.deliveryOnline = !state.deliveryOnline; save(); render(); },
@@ -403,6 +463,10 @@ const actions = {
     const o = state.orders.find(o => o.id === id);
     if (o) { o.rated = +n; save(); toast(`Rated ${n} stars — thanks!`); render(); }
   },
+  rateCourier(id, n) {
+    const o = state.orders.find(o => o.id === id);
+    if (o) { o.courierRated = +n; save(); toast(`Rated courier ${n} stars`); render(); }
+  },
   reorder(id) {
     const o = state.orders.find(o => o.id === id);
     if (!o) return;
@@ -415,10 +479,31 @@ const actions = {
     reset(); go('/');
   },
   goStore(id) { go('/buyer/store/' + id); },
-  showLocation() { go('/buyer/location'); },
-  chooseBlock(b) {
-    state.user.location = `Block ${b}, Room —`;
-    save(); toast(`Location set to Block ${b}`); go('/buyer/cart');
+  showLocation(from) {
+    state._locReturn = from || location.hash.slice(1) || '/buyer/home';
+    save(); go('/buyer/location');
+  },
+  pickBlock(b) {
+    state._pickedBlock = b;
+    save(); render();
+  },
+  saveLocation() {
+    const block = state._pickedBlock || (state.user.location.match(/Block (\w+)/) || [])[1] || 'K';
+    const roomEl = document.getElementById('room-input');
+    const noteEl = document.getElementById('note-input');
+    const room = (roomEl && roomEl.value.trim()) || '—';
+    const note = (noteEl && noteEl.value.trim()) || '';
+    state.user.location = `Block ${block}, Room ${room}`;
+    state.user.locNote = note;
+    state._pickedBlock = null;
+    save();
+    toast(`Location saved`);
+    go(state._locReturn || '/buyer/home');
+  },
+  setScheduledTime(t) {
+    state.scheduledTime = t;
+    state.deliveryTime = 'Scheduled';
+    save(); closeSheet();
   },
   showSheet(name) { openSheet(name); },
   closeSheet() { closeSheet(); },
@@ -458,6 +543,30 @@ function sheetOverlay() {
     ].map(n => `<div class="card row gap-12"><div style="width:36px;height:36px;background:var(--cream);border-radius:10px;display:flex;align-items:center;justify-content:center">${n.icon}</div><div class="col grow gap-4"><div class="h3">${n.title}</div><div class="muted">${n.sub}</div></div></div>`).join('')}
       </div>
       <button class="btn btn-primary btn-block mt-16" data-action="closeSheet">Close</button>`;
+  } else if (sheetName === 'schedule-time') {
+    // Build 10-minute slots from 11:00 to 14:00
+    const slots = [];
+    for (let h = 11; h < 14; h++) {
+      for (let m = 0; m < 60; m += 10) {
+        const label = String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+        slots.push(label);
+      }
+    }
+    slots.push('14:00');
+    const cur = state.scheduledTime || '12:00';
+    content = `
+      <div class="sheet-handle"></div>
+      <div class="h2">Schedule pickup time</div>
+      <div class="body mt-4">Choose when your order should arrive. Slots run every 10 minutes.</div>
+      <div class="lbl mt-16" style="color:var(--charcoal)">Available slots · today</div>
+      <div id="time-scroll" style="display:flex;gap:8px;overflow-x:auto;padding:12px 0 4px;scrollbar-width:none;-ms-overflow-style:none">
+        ${slots.map(s => `<div data-action="setScheduledTime|${s}" style="flex-shrink:0;min-width:70px;padding:14px 12px;border-radius:14px;text-align:center;cursor:pointer;background:${s === cur ? 'var(--orange)' : 'var(--cream)'};color:${s === cur ? '#fff' : 'var(--charcoal)'};border:1.5px solid ${s === cur ? 'var(--orange)' : 'var(--border)'};font-weight:${s === cur ? '800' : '600'};font-size:14px">${s}</div>`).join('')}
+      </div>
+      <style>#time-scroll::-webkit-scrollbar{display:none}</style>
+      <div class="card-flat mt-16" style="background:var(--cream);border:1px dashed var(--border)">
+        <div class="row spread"><span class="body">Selected time</span><span class="h3" style="color:var(--orange)">${cur}</span></div>
+      </div>
+      <button class="btn btn-primary btn-block mt-16" data-action="closeSheet">Confirm</button>`;
   } else if (sheetName === 'add-item') {
     content = `
       <div class="sheet-handle"></div>
@@ -560,17 +669,12 @@ route('/', () => {
       </svg>
     </div>
     <div class="col gap-16" style="align-items:center;text-align:center">
-      <div class="row gap-8">
-        <svg width="44" height="44" viewBox="0 0 48 48">
-          <path d="M6 22 Q6 34 24 40 Q42 34 42 22 Z" fill="var(--orange)"/>
-          <path d="M6 22 L42 22" stroke="var(--orange-deep)" stroke-width="2"/>
-          <path d="M14 16 L24 12 L34 16 L24 20 Z" fill="var(--charcoal)"/>
-          <path d="M32 17 L32 24" stroke="var(--charcoal)" stroke-width="2" stroke-linecap="round"/>
-          <circle cx="32" cy="25" r="1.5" fill="var(--amber)"/>
-        </svg>
-        <div style="font-size:32px;font-weight:800;letter-spacing:-1px;color:var(--charcoal)">Kenyan<span style="color:var(--orange)">'</span>in</div>
+      <div class="row gap-10">
+        ${brandMark(52)}
+        <div style="font-size:34px;font-weight:800;letter-spacing:-1.2px;color:var(--charcoal)">Kenyan<span style="color:var(--orange)">'</span>in</div>
       </div>
-      <div style="font-size:16px;color:var(--ink2);max-width:280px;line-height:1.5;font-weight:500">Campus food, delivered<br>to your class.</div>
+      <div style="font-size:17px;color:var(--charcoal);max-width:280px;line-height:1.35;font-weight:800;letter-spacing:-.3px">Between classes,<br>we deliver.</div>
+      <div style="font-size:12.5px;color:var(--ink3);max-width:260px;line-height:1.45;font-weight:500">Campus food from the stores you know — straight to your classroom.</div>
     </div>
     <div class="col gap-12">
       <button class="btn btn-primary btn-block" data-go="/role">Get Started</button>
@@ -613,7 +717,7 @@ route('/role', () => {
 route('/buyer/home', () => {
   const activeOrder = state.orders.find(o => o.status !== 'delivered');
   return `<div class="screen">
-    <div class="topbar tint-buyer">
+    <div class="topbar">
       <div class="row spread" style="align-items:flex-start">
         <div class="col gap-8">
           <div class="row gap-8">
@@ -623,7 +727,7 @@ route('/buyer/home', () => {
               <div style="font-size:14px;font-weight:700">Ready to eat?</div>
             </div>
           </div>
-          <div class="row gap-6" style="background:#fff;border-radius:999px;padding:8px 12px;box-shadow:var(--shadow-sm);width:fit-content;cursor:pointer" data-go="/buyer/location">
+          <div class="row gap-6" style="background:#fff;border-radius:999px;padding:8px 12px;box-shadow:var(--shadow-sm);width:fit-content;cursor:pointer" data-action="showLocation:/buyer/home">
             ${I.pin()}<span style="font-size:12px;font-weight:600">${state.user.location}</span>${I.chevD()}
           </div>
         </div>
@@ -683,31 +787,59 @@ route('/buyer/home', () => {
   </div>`;
 });
 
-// Location picker (helper screen — tap map)
+// Location picker (helper screen — tap map, then fill room + note)
 route('/buyer/location', () => {
-  const html = campusMap(360, 500, { highlights: ['K'], onBlock: true });
-  setTimeout(() => {
-    $$('.block-tap').forEach(el => el.addEventListener('click', () => {
-      actions.chooseBlock(el.dataset.block);
-    }));
-  }, 0);
+  // Derive current block (from a fresh tap or from saved location)
+  const currentBlock = state._pickedBlock || (state.user.location.match(/Block (\w+)/) || [])[1] || 'K';
+  const currentRoom = (state.user.location.match(/Room ([^,]+)/) || [])[1] || '';
+  const roomVal = currentRoom === '—' ? '' : currentRoom;
+  const noteVal = state.user.locNote || '';
+  // Map: highlight the picked block; tapping a block re-renders with new pick
+  const html = campusMap(360, 340, { highlights: [currentBlock], onBlock: true });
+  const backRoute = state._locReturn || '/buyer/home';
   return `<div class="screen">
     <div class="topbar row gap-12">
-      <div class="topbar-icon" data-go="/buyer/cart">${I.back()}</div>
-      <div class="col gap-2 grow"><div class="h1">Delivery Location</div><div class="muted">Tap a building to select</div></div>
+      <div class="topbar-icon" data-go="${backRoute}">${I.back()}</div>
+      <div class="col gap-2 grow">
+        <div class="h1">Delivery Location</div>
+        <div class="muted">Tap a building, then add the room</div>
+      </div>
     </div>
-    <div class="px-16">${html}</div>
-    <div class="p-20">
-      <div class="card row gap-8">
-        ${I.pin('var(--mint)')}
-        <div class="col gap-2 grow">
-          <div class="h3">${state.user.location}</div>
-          <div class="muted">${state.user.locNote}</div>
+    <div class="scroll">
+      <div class="px-16">${html}</div>
+      <div class="p-20 col gap-12">
+        <div class="card">
+          <div class="lbl" style="color:var(--charcoal);margin-bottom:8px">Selected building</div>
+          <div class="row gap-8">
+            ${I.pin('var(--orange)')}
+            <div class="h2">Block ${currentBlock}</div>
+          </div>
+          <div class="muted mt-4">Tap another block on the map to change</div>
+        </div>
+        <div class="card">
+          <div class="lbl" style="color:var(--charcoal);margin-bottom:10px">Room / Floor</div>
+          <input id="room-input" type="text" placeholder="e.g. 305, Floor 3" value="${roomVal.replace(/"/g, '&quot;')}"
+            style="width:100%;padding:12px 14px;background:var(--cream);border:1px solid var(--border);border-radius:12px;font-size:14px;outline:none">
+        </div>
+        <div class="card">
+          <div class="lbl" style="color:var(--charcoal);margin-bottom:10px">Note for courier (optional)</div>
+          <input id="note-input" type="text" placeholder="e.g. Near the whiteboard entrance" value="${noteVal.replace(/"/g, '&quot;')}"
+            style="width:100%;padding:12px 14px;background:var(--cream);border:1px solid var(--border);border-radius:12px;font-size:14px;outline:none">
         </div>
       </div>
     </div>
+    <div class="p-16" style="background:linear-gradient(180deg,transparent,var(--cream) 30%);flex-shrink:0">
+      <button class="btn btn-primary btn-block" data-action="saveLocation">Save Location</button>
+    </div>
   </div>`;
 });
+
+// Map-block tap wiring: attach after every render, since router replaces DOM
+function wireMapBlocks() {
+  $$('.block-tap').forEach(el => {
+    el.addEventListener('click', () => actions.pickBlock(el.dataset.block));
+  });
+}
 
 // 4. STORE MENU
 route('/buyer/store/:id', ({ id }) => {
@@ -718,12 +850,11 @@ route('/buyer/store/:id', ({ id }) => {
   const cartN = cartCount(), cartTotal = cartSubtotal();
   return `<div class="screen">
     <div class="scroll">
-      <div style="position:relative">
-        ${storeBanner(s.hue)}
-        <div class="topbar-icon" style="position:absolute;top:16px;left:16px;background:rgba(255,255,255,.95)" data-go="/buyer/home">${I.back()}</div>
-        <div class="topbar-icon" style="position:absolute;top:16px;right:16px;background:rgba(255,255,255,.95);color:var(--orange)" data-action="toggleFav:${s.id}">${I.heart('var(--orange)', fav)}</div>
+      <div class="topbar row spread">
+        <div class="topbar-icon" data-go="/buyer/home">${I.back()}</div>
+        <div class="topbar-icon" style="color:var(--orange)" data-action="toggleFav:${s.id}">${I.heart('var(--orange)', fav)}</div>
       </div>
-      <div class="card" style="margin:-30px 16px 0;box-shadow:var(--shadow)">
+      <div class="card" style="margin:4px 16px 0;box-shadow:var(--shadow)">
         <div class="row spread" style="align-items:flex-start">
           <div class="col gap-6">
             <div class="h1">${s.name}</div>
@@ -780,7 +911,7 @@ route('/buyer/cart', () => {
       </div>
       <div class="scroll">
         <div class="empty">
-          ${I.cart('var(--ink4)')}
+          <div class="brand-float" style="opacity:.7">${brandMark(72)}</div>
           <div style="font-size:16px;font-weight:700;color:var(--charcoal);margin-top:12px">No items yet — hungry?</div>
           <div class="mt-8">Browse stores to add food to your cart.</div>
           <button class="btn btn-primary mt-16" data-go="/buyer/home" style="max-width:200px;margin:16px auto 0">Browse Stores</button>
@@ -818,10 +949,10 @@ route('/buyer/cart', () => {
       <div class="card mt-12">
         <div class="row spread" style="margin-bottom:10px">
           <div class="lbl" style="color:var(--charcoal)">Delivery Location</div>
-          <span style="font-size:11px;color:var(--orange);font-weight:700;cursor:pointer" data-go="/buyer/location">Change</span>
+          <span style="font-size:11px;color:var(--orange);font-weight:700;cursor:pointer" data-action="showLocation:/buyer/cart">Change</span>
         </div>
-        ${campusMap(322, 110, { highlights: ['K'], dest: [0.24, 0.47] })}
-        <div class="row gap-8 mt-8">${I.pin('var(--mint)')}<div class="col gap-2"><div class="h3">${state.user.location}</div><div class="muted">${state.user.locNote}</div></div></div>
+        ${campusMap(322, 110, { highlights: [userBlock()], dest: userBlockCoord() })}
+        <div class="row gap-8 mt-8">${I.pin('var(--mint)')}<div class="col gap-2"><div class="h3">${state.user.location}</div><div class="muted">${state.user.locNote || 'No note added'}</div></div></div>
       </div>
 
       <div class="card mt-12">
@@ -831,9 +962,9 @@ route('/buyer/cart', () => {
             <div style="font-size:13px;font-weight:800;color:${state.deliveryTime === 'ASAP' ? 'var(--orange-deep)' : 'var(--ink2)'}">ASAP</div>
             <div class="muted mt-4">~18 min</div>
           </div>
-          <div data-action="setTime:Scheduled" style="flex:1;padding:12px;border:2px solid ${state.deliveryTime === 'Scheduled' ? 'var(--orange)' : 'var(--border)'};background:${state.deliveryTime === 'Scheduled' ? 'var(--orange-soft)' : '#fff'};border-radius:12px;text-align:center;cursor:pointer">
-            <div style="font-size:13px;font-weight:700;color:${state.deliveryTime === 'Scheduled' ? 'var(--orange-deep)' : 'var(--ink2)'}">Scheduled</div>
-            <div class="muted mt-4">Pick a time</div>
+          <div data-action="showSheet:schedule-time" style="flex:1;padding:12px;border:2px solid ${state.deliveryTime === 'Scheduled' ? 'var(--orange)' : 'var(--border)'};background:${state.deliveryTime === 'Scheduled' ? 'var(--orange-soft)' : '#fff'};border-radius:12px;text-align:center;cursor:pointer">
+            <div style="font-size:13px;font-weight:${state.deliveryTime === 'Scheduled' ? '800' : '700'};color:${state.deliveryTime === 'Scheduled' ? 'var(--orange-deep)' : 'var(--ink2)'}">Scheduled</div>
+            <div class="muted mt-4">${state.deliveryTime === 'Scheduled' ? state.scheduledTime : 'Pick a time'}</div>
           </div>
         </div>
       </div>
@@ -894,6 +1025,24 @@ document.addEventListener('input', e => {
   }
 });
 
+// 5b. ORDER SUCCESS — celebratory interstitial before tracking
+route('/buyer/success/:id', ({ id }) => {
+  const o = state.orders.find(x => x.id === id);
+  if (!o) { setTimeout(() => go('/buyer/orders'), 0); return `<div class="screen"></div>`; }
+  const s = getStore(o.storeId);
+  // Auto-forward to tracking after 2.4s
+  setTimeout(() => { if (location.hash.includes('/success/')) go('/buyer/track/' + o.id); }, 2400);
+  return `<div class="screen"><div class="success">
+    <div class="ring"><svg width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-11"/></svg></div>
+    <h2>Order placed!</h2>
+    <p><b>${s.name}</b> is preparing your food. We'll track your courier from here.</p>
+    <div class="courier-badge">
+      ${avatarEl('R', 'var(--mint)', 32)}
+      <div class="col gap-2"><div style="font-size:12px;font-weight:800">${o.courier} is on it</div><div style="font-size:10.5px;color:var(--ink3);font-weight:500">Order #${o.id} · ${fmt(o.total)}</div></div>
+    </div>
+  </div></div>`;
+});
+
 // 6. ORDER TRACKING
 route('/buyer/track/:id', ({ id }) => {
   const o = state.orders.find(x => x.id === id);
@@ -917,7 +1066,13 @@ route('/buyer/track/:id', ({ id }) => {
     </div>
     <div class="scroll px-16">
       <div class="card" style="padding:0;overflow:hidden">
-        ${campusMap(360, 180, { highlights: ['K'], stores: [[0.78, 0.47]], dest: [0.24, 0.47], you: [0.52, 0.45], path: [[0.78, 0.47], [0.52, 0.45], [0.24, 0.47]] })}
+        ${(() => {
+    const ub = userBlock(); const dc = userBlockCoord();
+    const sc = blockCoords[getStore(o.storeId)?.block?.replace('Block ', '') || 'C'] || [0.68, 0.22];
+    // Meeting point midway between store and destination
+    const mid = [(sc[0] + dc[0]) / 2, (sc[1] + dc[1]) / 2];
+    return campusMap(360, 180, { highlights: [ub], stores: [sc], dest: dc, you: mid, path: [sc, mid, dc] });
+  })()}
         <div style="padding:14px 16px;background:#fff">
           <div class="row spread" style="align-items:baseline">
             <div class="col gap-2">
@@ -1048,7 +1203,7 @@ route('/buyer/rate/:id', ({ id }) => {
         </div>
         <div style="text-align:center;font-weight:700;margin-top:4px">${o.courier}</div>
         <div class="rating">
-          ${[1, 2, 3, 4, 5].map(n => I.starOutline('var(--ink4)', 34)).join('')}
+          ${[1, 2, 3, 4, 5].map(n => `<span data-action="rateCourier:${o.id}:${n}">${I.starOutline(n <= (o.courierRated || 0) ? 'var(--amber)' : 'var(--ink4)', 34)}</span>`).join('')}
         </div>
       </div>
       <button class="btn btn-primary btn-block mt-16" data-go="/buyer/orders">Submit</button>
@@ -1108,10 +1263,9 @@ route('/seller/dashboard', () => {
 route('/seller/menu', () => {
   const items = menu[1]; // Bu Siti
   return `<div class="screen bg-seller">
-    <div style="position:relative">
-      ${storeBanner(24)}
-      <div class="topbar-icon" style="position:absolute;top:14px;left:14px;background:rgba(255,255,255,.95)" data-go="/seller/dashboard">${I.back()}</div>
-      <div style="position:absolute;bottom:12px;right:14px;background:rgba(0,0,0,.55);color:#fff;font-size:11px;font-weight:600;padding:6px 12px;border-radius:999px;display:flex;align-items:center;gap:6px">${I.edit('#fff')}<span>Tap to change</span></div>
+    <div class="topbar row spread" style="background:#fff;border-bottom:1px solid var(--border)">
+      <div class="topbar-icon" data-go="/seller/dashboard">${I.back()}</div>
+      <div style="background:var(--cream);color:var(--ink2);font-size:11px;font-weight:600;padding:6px 12px;border-radius:999px;display:flex;align-items:center;gap:6px;cursor:pointer">${I.edit()}<span>Edit store photo</span></div>
     </div>
     <div style="padding:16px 20px 10px;background:#fff;border-bottom:1px solid var(--border)">
       <div class="row spread">
@@ -1338,7 +1492,12 @@ route('/delivery/active', () => {
         </div>
         ${ad.step === 2 ? `
           <div style="padding:12px 14px">
-            ${campusMap(324, 160, { highlights: ['K'], stores: [[0.68, 0.22]], dest: [0.24, 0.47], you: [0.52, 0.32], path: [[0.68, 0.22], [0.52, 0.32], [0.24, 0.47]] })}
+            ${(() => {
+              const ub = userBlock(); const dc = userBlockCoord();
+              const sc = [0.68, 0.22]; // Warung Bu Siti · Block C
+              const mid = [(sc[0] + dc[0]) / 2, (sc[1] + dc[1]) / 2 - 0.05];
+              return campusMap(324, 160, { highlights: [ub], stores: [sc], dest: dc, you: mid, path: [sc, mid, dc] });
+            })()}
             <div class="row gap-6 mt-8 card-flat" style="background:var(--cream);padding:8px 10px">
               ${I.pin('var(--mint)')}
               <div class="col gap-2 grow"><div class="h3">${state.user.location}</div><div class="muted">${state.user.locNote} · ~3 min walk</div></div>
@@ -1407,7 +1566,7 @@ route('/delivery/earnings', () => {
 // 14. CAMPUS MAP (shared)
 route('/map', () => {
   const kind = state.role || 'buyer';
-  const html = campusMap(360, 440, { highlights: ['K'], stores: [[0.42, 0.22], [0.78, 0.47], [0.20, 0.44], [0.24, 0.74]], dest: [0.24, 0.47], you: [0.52, 0.35] });
+  const html = campusMap(360, 440, { highlights: [userBlock()], stores: [[0.42, 0.22], [0.78, 0.47], [0.20, 0.44], [0.24, 0.74]], dest: userBlockCoord(), you: [0.52, 0.35] });
   return `<div class="screen">
     <div class="topbar">
       <div class="row spread">
@@ -1459,12 +1618,13 @@ route('/profile', () => {
     { k: 'nopeanuts', label: 'No Peanuts', color: 'ghost' },
   ];
   return `<div class="screen">
-    <div style="padding:20px 20px 24px;background:linear-gradient(180deg, var(--orange-soft), var(--cream));text-align:center">
-      <div style="width:80px;height:80px;border-radius:50%;background:var(--orange);color:#fff;display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:800;margin:0 auto 12px;border:4px solid #fff;box-shadow:0 4px 16px rgba(255,107,53,.3)">${state.user.initials}</div>
+    <div style="padding:24px 20px 20px;text-align:center;position:relative">
+      <div style="position:absolute;top:16px;left:20px">${brandMarkTight(28)}</div>
+      <div style="width:80px;height:80px;border-radius:50%;background:var(--orange);color:#fff;display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:800;margin:0 auto 12px;border:4px solid #fff;box-shadow:0 4px 16px rgba(255,107,53,.25)">${state.user.initials}</div>
       <div style="font-size:20px;font-weight:800">${state.user.name}</div>
       <div class="muted mt-4">Tarumanagara University · SID ${state.user.sid}</div>
     </div>
-    <div class="px-16" style="margin-top:-16px">
+    <div class="px-16">
       <div class="card" style="padding:6px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px">
         ${RoleBtn('buyer', '🛒', 'Buyer', 'var(--orange)')}
         ${RoleBtn('seller', '🏪', 'Seller', 'var(--blue)')}
@@ -1499,7 +1659,7 @@ route('/profile', () => {
         </div>
       `}
       ${[
-      { icon: I.pin('var(--orange)'), title: 'Default Delivery Location', sub: state.user.location, action: 'showLocation' },
+      { icon: I.pin('var(--orange)'), title: 'Default Delivery Location', sub: state.user.location, action: 'showLocation:/profile' },
       { icon: I.wallet('var(--orange)'), title: 'Payment Methods', sub: 'GoPay · OVO · Campus Card' },
       { icon: I.bell('var(--orange)'), title: 'Notification Settings', sub: 'Order updates on' },
       { icon: I.help('var(--orange)'), title: 'Help & Support', sub: 'FAQs, contact us' },
